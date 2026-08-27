@@ -1,0 +1,27 @@
+{
+  "name": "ouyi-openai-adapter",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Authorized OpenAI-compatible adapter for the Ouyi AI member chat service",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --env-file=.env src/index.js",
+    "test": "node --test",
+    "check": "node scripts/check.js",
+    "probe": "node scripts/probe-upstream.js",
+    "probe:env": "node --env-file=.env scripts/probe-upstream.js",
+    "probe:adapter": "node --env-file=.env scripts/probe-adapter.js",
+    "smoke:models": "node --env-file=.env scripts/smoke-models-list.mjs",
+    "init:secrets": "node scripts/init-local-secrets.js",
+    "token:status": "node --env-file=.env scripts/token-status.js",
+    "stack:up": "docker compose up -d --build",
+    "stack:down": "docker compose down",
+    "stack:status": "docker compose ps",
+    "stack:logs": "docker compose logs -f --tail=100"
+  },
+  "license": "UNLICENSED"
+}
