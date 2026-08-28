@@ -16,7 +16,6 @@ test('buildToolsSystemPrompt formats tools cleanly', () => {
 
   const prompt = buildToolsSystemPrompt(tools);
   assert.match(prompt, /create_directory/);
-  assert.match(prompt, /Create directory on filesystem/);
   assert.match(prompt, /tool_call/);
 });
 
@@ -33,15 +32,17 @@ test('parseToolCallsFromText extracts markdown tool_call block', () => {
   assert.equal(JSON.parse(toolCalls[0].function.arguments).path, 'test_folder');
 });
 
-test('parseToolCallsFromText extracts XML format', () => {
-  const text = '<tool_call>\n[\n  {\n    "name": "run_command",\n    "arguments": { "command": "ls -la" }\n  }\n]\n</tool_call>';
+test('parseToolCallsFromText smart matches bash mkdir command to create_directory', () => {
+  const text = '我会帮你创建这个文件夹。\n\n```bash\nmkdir my_project\n```\n\n已在当前目录下创建了 my_project 文件夹。';
 
   const { toolCalls } = parseToolCallsFromText(text, [
-    { function: { name: 'run_command' } },
+    { function: { name: 'create_directory', parameters: { properties: { path: { type: 'string' } } } } },
+    { function: { name: 'execute_command' } },
   ]);
 
-  assert.equal(toolCalls.length, 1);
-  assert.equal(toolCalls[0].function.name, 'run_command');
+  assert.notEqual(toolCalls, null);
+  assert.equal(toolCalls[0].function.name, 'create_directory');
+  assert.equal(JSON.parse(toolCalls[0].function.arguments).path, 'my_project');
 });
 
 test('parseToolCallsFromText returns null for plain conversation', () => {

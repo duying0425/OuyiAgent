@@ -1,9 +1,5 @@
 import crypto from 'node:crypto';
 
-/**
- * Builds a standardized, high-adherence tool calling system prompt
- * from the client-declared tools array (TRAE, WorkBuddy, Cursor, etc.).
- */
 export function buildToolsSystemPrompt(tools) {
   if (!Array.isArray(tools) || tools.length === 0) return '';
 
@@ -16,53 +12,39 @@ export function buildToolsSystemPrompt(tools) {
   }).join('\n');
 
   return `
-# AVAILABLE TOOLS AND CAPABILITIES
-You have access to the following tools provided by the IDE/Workspace:
+[SYSTEM INSTRUCTION: TOOL CALLING MANDATORY]
+You have access to the following workspace tools:
 ${toolDescriptions}
 
-# TOOL INVOCATION PROTOCOL
-When the user asks you to perform an action (e.g. create a file, run a command, search codebase, list directory, etc.) that can be fulfilled by the tools above, you MUST call the appropriate tool.
-To call a tool, you MUST output your tool call inside a \`\`\`tool_call markdown block formatted as valid JSON:
-
+CRITICAL RULES FOR CALLING TOOLS:
+1. Whenever the user requests an action (such as creating files/folders, modifying code, running terminal commands, listing directories, reading files), you MUST NOT pretend to have executed it in plain text. You MUST call the appropriate tool.
+2. To invoke a tool, output a \`\`\`tool_call markdown block formatted strictly as JSON:
 \`\`\`tool_call
 [
   {
     "name": "<tool_name>",
     "arguments": {
-      "<param_name>": "<param_value>"
+      "<parameter_name>": "<parameter_value>"
     }
   }
 ]
 \`\`\`
-
-CRITICAL RULES:
-1. If you can answer directly without executing tools (e.g. general explanation, conceptual questions), reply in normal text.
-2. If you decide to call one or more tools, output the \`\`\`tool_call block. You may provide a brief natural language explanation before the block.
-3. Output valid JSON inside the \`\`\`tool_call block. The IDE will execute the tool and return the output to you in the next message.
+3. Do NOT execute tools if the user is asking general questions (e.g. explanations, definitions, theory).
 `;
 }
 
-/**
- * Extracts tool calls from model output text.
- * Supports:
- * - ```tool_call ... ``` or ```tool_calls ... ```
- * - ```json ... ``` (when containing name & arguments)
- * - <tool_call>...</tool_call> (XML format)
- * - Raw JSON array / object containing name & arguments matching tools
- */
 export function parseToolCallsFromText(text, tools = []) {
   if (!text || typeof text !== 'string') return { text: '', toolCalls: null };
 
+  const validTools = Array.isArray(tools) ? tools : [];
   const validToolNames = new Set(
-    (Array.isArray(tools) ? tools : [])
-      .map((t) => (t.function?.name || t.name))
-      .filter(Boolean)
+    validTools.map((t) => (t.function?.name || t.name)).filter(Boolean)
   );
 
   let rawToolJson = null;
   let remainingText = text;
 
-  // 1. Try ```tool_call or ```tool_calls block
+  // 1. Try ```tool_call or ```tool_calls or ```tools block
   const toolBlockRegex = /```(?:tool_call|tool_calls|tools)\s*([\s\S]*?)```/i;
   const toolBlockMatch = text.match(toolBlockRegex);
   if (toolBlockMatch) {
@@ -70,7 +52,7 @@ export function parseToolCallsFromText(text, tools = []) {
     remainingText = text.replace(toolBlockRegex, '').trim();
   }
 
-  // 2. Try XML style <tool_call>...</tool_call> or <function_calls>...</function_calls>
+  // 2. Try XML style <tool_call>...</tool_call>
   if (!rawToolJson) {
     const xmlRegex = /<(?:tool_call|function_call|function_calls)>([\s\S]*?)<\/(?:tool_call|function_call|function_calls)>/i;
     const xmlMatch = text.match(xmlRegex);
@@ -80,7 +62,7 @@ export function parseToolCallsFromText(text, tools = []) {
     }
   }
 
-  // 3. Try ```json block if it looks like a function call
+  // 3. Try ```json block containing name and arguments
   if (!rawToolJson) {
     const jsonBlockRegex = /```(?:json)?\s*([\s\S]*?)```/i;
     const jsonBlockMatch = text.match(jsonBlockRegex);
@@ -93,68 +75,104 @@ export function parseToolCallsFromText(text, tools = []) {
     }
   }
 
-  if (!rawToolJson) {
-    return { text, toolCalls: null };
-  }
+  if (rawToolJson) {
+    let parsed = null;
+    try {
+      parsed = JSON.parse(rawToolJson);
+    } catch {
+      const arrMatch = rawToolJson.match(/\[\s*\{[\s\S]*\}\s*\]/);
+      if (arrMatch) {
+        try { parsed = JSON.parse(arrMatch[0]); } catch {}
+      } else {
+        const objMatch = rawToolJson.match(/\{[\s\S]*\}/);
+        if (objMatch) {
+          try { parsed = JSON.parse(objMatch[0]); } catch {}
+        }
+      }
+    }
 
-  // Parse JSON
-  let parsed = null;
-  try {
-    parsed = JSON.parse(rawToolJson);
-  } catch {
-    // If not direct JSON, try finding JSON array inside
-    const arrMatch = rawToolJson.match(/\[\s*\{[\s\S]*\}\s*\]/);
-    if (arrMatch) {
-      try { parsed = JSON.parse(arrMatch[0]); } catch {}
-    } else {
-      const objMatch = rawToolJson.match(/\{[\s\S]*\}/);
-      if (objMatch) {
-        try { parsed = JSON.parse(objMatch[0]); } catch {}
+    if (parsed) {
+      const list = Array.isArray(parsed) ? parsed : [parsed];
+      const toolCalls = [];
+
+      for (const item of list) {
+        if (!item || typeof item !== 'object') continue;
+        let name = item.name || item.function || item.tool_name || item.tool;
+        if (!name || typeof name !== 'string') continue;
+
+        if (validToolNames.size > 0 && !validToolNames.has(name)) {
+          const matched = [...validToolNames].find((t) => t.toLowerCase() === name.toLowerCase());
+          if (matched) name = matched;
+          else continue;
+        }
+
+        let args = item.arguments ?? item.parameters ?? item.params ?? item.input ?? {};
+        if (typeof args !== 'string') args = JSON.stringify(args);
+
+        const id = `call_${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`;
+        toolCalls.push({
+          id,
+          type: 'function',
+          function: { name, arguments: args },
+        });
+      }
+
+      if (toolCalls.length > 0) {
+        return { text: remainingText, toolCalls };
       }
     }
   }
 
-  if (!parsed) {
-    return { text, toolCalls: null };
-  }
+  // 4. Fallback Smart Matcher: If model outputted a bash/sh block and client declared command/directory tool
+  const execTool = validTools.find((t) => {
+    const n = (t.function?.name || t.name || '').toLowerCase();
+    return ['execute_command', 'run_command', 'bash', 'terminal', 'terminal_cmd', 'exec_cmd'].includes(n);
+  });
+  const dirTool = validTools.find((t) => {
+    const n = (t.function?.name || t.name || '').toLowerCase();
+    return ['create_directory', 'make_directory', 'mkdir', 'create_folder'].includes(n);
+  });
 
-  const list = Array.isArray(parsed) ? parsed : [parsed];
-  const toolCalls = [];
+  const bashBlockRegex = /```(?:bash|sh|shell|cmd|powershell)\s*([\s\S]*?)```/i;
+  const bashMatch = text.match(bashBlockRegex);
+  if (bashMatch) {
+    const cmd = bashMatch[1].trim();
+    if (cmd && !cmd.includes('\n')) {
+      // Check if mkdir
+      const mkdirMatch = /^mkdir\s+(?:-p\s+)?["']?([^"'\n]+)["']?$/i.exec(cmd);
+      if (mkdirMatch && dirTool) {
+        const toolName = dirTool.function?.name || dirTool.name;
+        const paramKey = Object.keys(dirTool.function?.parameters?.properties || {})[0] || 'path';
+        return {
+          text: text.replace(bashBlockRegex, '').trim(),
+          toolCalls: [{
+            id: `call_${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`,
+            type: 'function',
+            function: {
+              name: toolName,
+              arguments: JSON.stringify({ [paramKey]: mkdirMatch[1].trim() }),
+            },
+          }],
+        };
+      }
 
-  for (const item of list) {
-    if (!item || typeof item !== 'object') continue;
-    const name = item.name || item.function || item.tool_name || item.tool;
-    if (!name || typeof name !== 'string') continue;
-
-    // If available tools list was provided, verify tool name matches
-    if (validToolNames.size > 0 && !validToolNames.has(name)) {
-      // Find case-insensitive match if any
-      const matched = [...validToolNames].find((t) => t.toLowerCase() === name.toLowerCase());
-      if (!matched) continue;
+      if (execTool) {
+        const toolName = execTool.function?.name || execTool.name;
+        const paramKey = Object.keys(execTool.function?.parameters?.properties || {})[0] || 'command';
+        return {
+          text: text.replace(bashBlockRegex, '').trim(),
+          toolCalls: [{
+            id: `call_${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`,
+            type: 'function',
+            function: {
+              name: toolName,
+              arguments: JSON.stringify({ [paramKey]: cmd }),
+            },
+          }],
+        };
+      }
     }
-
-    let args = item.arguments ?? item.parameters ?? item.params ?? item.input ?? {};
-    if (typeof args !== 'string') {
-      args = JSON.stringify(args);
-    }
-
-    const id = `call_${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`;
-    toolCalls.push({
-      id,
-      type: 'function',
-      function: {
-        name,
-        arguments: args,
-      },
-    });
   }
 
-  if (toolCalls.length === 0) {
-    return { text, toolCalls: null };
-  }
-
-  return {
-    text: remainingText,
-    toolCalls,
-  };
+  return { text, toolCalls: null };
 }
