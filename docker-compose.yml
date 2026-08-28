@@ -26,8 +26,9 @@ services:
       retries: 3
       start_period: 10s
     networks:
-      - tiandaoagent_ai-internal
+      - ai-gateway
 
 networks:
-  tiandaoagent_ai-internal:
+  ai-gateway:
+    name: ai-gateway
     external: true
