@@ -14,35 +14,52 @@ export function extractSystemAndPrompt(messages) {
 
   for (const msg of messages) {
     if (!msg || typeof msg !== 'object') continue;
-    const role = String(msg.role ?? 'user').toLowerCase();
+    let role = String(msg.role ?? 'user').toLowerCase();
     let content = '';
     if (typeof msg.content === 'string') {
       content = msg.content;
     } else if (Array.isArray(msg.content)) {
       content = msg.content
-        .filter((part) => part && part.type === 'text')
-        .map((part) => part.text ?? '')
+        .filter((part) => part && (part.type === 'text' || part.type === 'input_text' || typeof part === 'string'))
+        .map((part) => (typeof part === 'string' ? part : part.text ?? ''))
         .join('\n');
     }
 
-    if (role === 'system') {
+    // Handle assistant tool_calls
+    if (!content && Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
+      content = msg.tool_calls
+        .map((tc) => `[Tool Call: ${tc.function?.name ?? 'unknown'}(${tc.function?.arguments ?? ''})]`)
+        .join('\n');
+    }
+
+    if (role === 'system' || role === 'developer') {
       if (content.trim()) systemParts.push(content.trim());
     } else {
-      conversation.push({ role, content });
+      if (role === 'tool' || role === 'function') {
+        const toolName = msg.name || msg.tool_call_id || 'function';
+        content = `[Tool Result: ${toolName}]\n${content}`;
+        role = 'user';
+      }
+      if (content.trim()) {
+        conversation.push({ role: role === 'assistant' ? 'assistant' : 'user', content });
+      }
     }
   }
 
   const systemMessage = systemParts.join('\n\n');
 
   if (conversation.length === 0) {
-    throw new AppError('At least one user or assistant message is required', {
-      status: 400,
-      type: 'invalid_request_error',
-      code: 'missing_user_message',
-    });
+    if (systemParts.length > 0) {
+      conversation.push({ role: 'user', content: systemParts.pop() });
+    } else {
+      throw new AppError('At least one user or assistant message is required', {
+        status: 400,
+        type: 'invalid_request_error',
+        code: 'missing_user_message',
+      });
+    }
   }
 
-  // If single message, use it directly. If multi-turn, format cleanly.
   let prompt = '';
   if (conversation.length === 1 && conversation[0].role === 'user') {
     prompt = conversation[0].content;
