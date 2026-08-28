@@ -1,5 +1,5 @@
 const DEFAULTS = Object.freeze({
-  host: '127.0.0.1',
+  host: '0.0.0.0',
   port: 8081,
   upstreamBaseUrl: 'https://api-8.rcouyi.com',
   maxConcurrency: 3,
