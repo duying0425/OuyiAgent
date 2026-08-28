@@ -241,10 +241,10 @@ export class UpstreamClient {
   async deleteTopic({ topicId, signal } = {}) {
     if (!topicId) return;
     try {
-      await this.fetch(this.url('/chatapi/chat/delete'), {
+      await this.fetch(this.url(`/chatapi/chat/${topicId}`), {
         method: 'POST',
         headers: this.headers({ json: true }),
-        body: JSON.stringify({ id: topicId }),
+        body: JSON.stringify({}),
         signal,
       });
     } catch (error) {
