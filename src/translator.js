@@ -74,6 +74,9 @@ export function extractSystemAndPrompt(messages, tools = []) {
       .join('\n\n');
   }
 
+  if (Array.isArray(tools) && tools.length > 0 && systemMessage) {
+    prompt = `${systemMessage}\n\n${prompt}`;
+  }
   return { systemMessage, prompt, conversation };
 }
 
