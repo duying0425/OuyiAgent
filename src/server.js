@@ -3,6 +3,7 @@ import http from 'node:http';
 import { AppError, normalizeError, openAIErrorBody } from './errors.js';
 import { Semaphore } from './semaphore.js';
 import { translateChatRequest } from './translator.js';
+import { parseToolCallsFromText } from './tool-engine.js';
 
 function writeJson(response, status, body) {
   if (response.writableEnded) return;
@@ -148,7 +149,6 @@ export function createAdapterServer({ config, client, catalog, logger }) {
         let topicId = null;
 
         try {
-          // 1. Create topic
           topicId = await client.createTopic({
             model: translated.model,
             systemMessage: translated.systemMessage,
@@ -157,7 +157,6 @@ export function createAdapterServer({ config, client, catalog, logger }) {
             signal: abortController.signal,
           });
 
-          // 2. Send message
           const botMsgId = await client.sendMessage({
             topicId,
             content: translated.prompt,
@@ -167,8 +166,7 @@ export function createAdapterServer({ config, client, catalog, logger }) {
           const created = Math.floor(startedAt / 1000);
           const completionId = `chatcmpl-${randomUUID().replace(/-/g, '')}`;
 
-          if (translated.stream) {
-            // Streaming mode
+          if (translated.stream && (!translated.tools || translated.tools.length === 0)) {
             response.writeHead(200, {
               'Content-Type': 'text/event-stream; charset=utf-8',
               'Cache-Control': 'no-cache, no-transform',
@@ -176,7 +174,6 @@ export function createAdapterServer({ config, client, catalog, logger }) {
               'X-Accel-Buffering': 'no',
             });
 
-            // Initial chunk
             response.write(`data: ${JSON.stringify(openAIChunk(completionId, created, translated.model, { role: 'assistant', content: '' }))}\n\n`);
 
             let fullText = '';
@@ -185,7 +182,6 @@ export function createAdapterServer({ config, client, catalog, logger }) {
               response.write(`data: ${JSON.stringify(openAIChunk(completionId, created, translated.model, { content: deltaText }))}\n\n`);
             }
 
-            // Finish chunk
             const estPromptTokens = Math.max(1, Math.ceil(translated.prompt.length / 2));
             const estCompletionTokens = Math.max(1, Math.ceil(fullText.length / 2));
             const usage = {
@@ -198,7 +194,6 @@ export function createAdapterServer({ config, client, catalog, logger }) {
             response.write('data: [DONE]\n\n');
             response.end();
           } else {
-            // Non-streaming mode
             let fullText = '';
             for await (const deltaText of client.streamMessage({ botMsgId, signal: abortController.signal })) {
               fullText += deltaText;
@@ -206,28 +201,63 @@ export function createAdapterServer({ config, client, catalog, logger }) {
 
             const estPromptTokens = Math.max(1, Math.ceil(translated.prompt.length / 2));
             const estCompletionTokens = Math.max(1, Math.ceil(fullText.length / 2));
+            const usage = {
+              prompt_tokens: estPromptTokens,
+              completion_tokens: estCompletionTokens,
+              total_tokens: estPromptTokens + estCompletionTokens,
+            };
 
-            writeJson(response, 200, {
-              id: completionId,
-              object: 'chat.completion',
-              created,
+            const { text: contentText, toolCalls } = parseToolCallsFromText(fullText, translated.tools);
+            const hasToolCalls = Boolean(toolCalls && toolCalls.length > 0);
+
+            logger?.info('chat_completion_result', {
+              requestId,
               model: translated.model,
-              choices: [
-                {
-                  index: 0,
-                  message: {
-                    role: 'assistant',
-                    content: fullText,
-                  },
-                  finish_reason: 'stop',
-                },
-              ],
-              usage: {
-                prompt_tokens: estPromptTokens,
-                completion_tokens: estCompletionTokens,
-                total_tokens: estPromptTokens + estCompletionTokens,
-              },
+              has_tool_calls: hasToolCalls,
+              tools_called: hasToolCalls ? toolCalls.map((t) => t.function.name) : [],
+              stream: translated.stream,
             });
+
+            if (translated.stream) {
+              response.writeHead(200, {
+                'Content-Type': 'text/event-stream; charset=utf-8',
+                'Cache-Control': 'no-cache, no-transform',
+                Connection: 'keep-alive',
+                'X-Accel-Buffering': 'no',
+              });
+
+              if (hasToolCalls) {
+                if (contentText) {
+                  response.write(`data: ${JSON.stringify(openAIChunk(completionId, created, translated.model, { role: 'assistant', content: contentText }))}\n\n`);
+                }
+                response.write(`data: ${JSON.stringify(openAIChunk(completionId, created, translated.model, { role: 'assistant', content: null, tool_calls: toolCalls }))}\n\n`);
+                response.write(`data: ${JSON.stringify(openAIChunk(completionId, created, translated.model, {}, 'tool_calls', usage))}\n\n`);
+              } else {
+                response.write(`data: ${JSON.stringify(openAIChunk(completionId, created, translated.model, { role: 'assistant', content: fullText }))}\n\n`);
+                response.write(`data: ${JSON.stringify(openAIChunk(completionId, created, translated.model, {}, 'stop', usage))}\n\n`);
+              }
+              response.write('data: [DONE]\n\n');
+              response.end();
+            } else {
+              writeJson(response, 200, {
+                id: completionId,
+                object: 'chat.completion',
+                created,
+                model: translated.model,
+                choices: [
+                  {
+                    index: 0,
+                    message: {
+                      role: 'assistant',
+                      content: hasToolCalls ? (contentText || null) : fullText,
+                      ...(hasToolCalls ? { tool_calls: toolCalls } : {}),
+                    },
+                    finish_reason: hasToolCalls ? 'tool_calls' : 'stop',
+                  },
+                ],
+                usage,
+              });
+            }
           }
 
           logger?.info('chat_completed', {
