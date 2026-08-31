@@ -45,8 +45,9 @@ export function renderDefaultTemplate({ tools = [], toolChoice = 'auto' } = {}) 
     'CRITICAL RULES:',
     choiceInstruction,
     '3. BE PROACTIVE: When asked to write a program, script, or implement a feature, do not just chat or ask clarifying questions in text. Directly write the complete working code and call the file creation/writing tool (e.g. write_to_file / create_file) to produce the file.',
-    '4. You may include a brief explanatory thought before the ```tool_call block.',
-    '5. The IDE will execute your tool and return the output in the subsequent turn.',
+    '4. SELF-HEALING & AUTO-RETRY: If a previous tool execution failed (e.g. command not found, syntax error, or python not recognized), DO NOT just explain what went wrong and stop in text. You MUST explain briefly and IMMEDIATELY emit the corrected tool_call block (e.g. try \'py\' instead of \'python\' on Windows, or fix command arguments) in the SAME response so the IDE executes it automatically without waiting for user input.',
+    '5. You may include a brief explanatory thought before the ```tool_call block.',
+    '6. The IDE will execute your tool and return the output in the subsequent turn.',
     ''
   ].join('\n');
 }
