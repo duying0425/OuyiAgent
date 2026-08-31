@@ -12,13 +12,13 @@ export function buildToolsSystemPrompt(tools) {
   }).join('\n');
 
   return `
-[SYSTEM INSTRUCTION: TOOL CALLING MANDATORY]
-You have access to the following workspace tools:
+[SYSTEM INSTRUCTION: WORKSPACE TOOLS AVAILABLE]
+You have access to the following workspace tools provided by the IDE:
 ${toolDescriptions}
 
-CRITICAL RULES FOR CALLING TOOLS:
-1. Whenever the user requests an action (such as creating files/folders, modifying code, running terminal commands, listing directories, reading files), you MUST NOT pretend to have executed it in plain text. You MUST call the appropriate tool.
-2. To invoke a tool, output a \`\`\`tool_call markdown block formatted strictly as JSON:
+CRITICAL RULES FOR EXECUTING ACTIONS:
+1. Whenever the user asks you to perform an action (e.g., create a folder, write a file, execute a command, list files, search code), you MUST call the appropriate tool.
+2. To invoke a tool, output a \`\`\`tool_call markdown block formatted strictly in JSON:
 \`\`\`tool_call
 [
   {
@@ -29,8 +29,19 @@ CRITICAL RULES FOR CALLING TOOLS:
   }
 ]
 \`\`\`
-3. Do NOT execute tools if the user is asking general questions (e.g. explanations, definitions, theory).
+3. Do NOT say "I cannot access your filesystem" if a tool is provided above. Always invoke the tool directly.
 `;
+}
+
+function findMatchingTool(tools, keywords) {
+  for (const t of tools) {
+    const name = (t.function?.name || t.name || '').toLowerCase();
+    const desc = (t.function?.description || t.description || '').toLowerCase();
+    for (const kw of keywords) {
+      if (name.includes(kw) || desc.includes(kw)) return t;
+    }
+  }
+  return null;
 }
 
 export function parseToolCallsFromText(text, tools = []) {
@@ -103,7 +114,12 @@ export function parseToolCallsFromText(text, tools = []) {
         if (validToolNames.size > 0 && !validToolNames.has(name)) {
           const matched = [...validToolNames].find((t) => t.toLowerCase() === name.toLowerCase());
           if (matched) name = matched;
-          else continue;
+          else {
+            // Fuzzy match with available tools
+            const fuzzy = [...validToolNames].find((t) => t.toLowerCase().includes(name.toLowerCase()) || name.toLowerCase().includes(t.toLowerCase()));
+            if (fuzzy) name = fuzzy;
+            else continue;
+          }
         }
 
         let args = item.arguments ?? item.parameters ?? item.params ?? item.input ?? {};
@@ -123,24 +139,21 @@ export function parseToolCallsFromText(text, tools = []) {
     }
   }
 
-  // 4. Fallback Smart Matcher: If model outputted a bash/sh block and client declared command/directory tool
-  const execTool = validTools.find((t) => {
-    const n = (t.function?.name || t.name || '').toLowerCase();
-    return ['execute_command', 'run_command', 'bash', 'terminal', 'terminal_cmd', 'exec_cmd'].includes(n);
-  });
-  const dirTool = validTools.find((t) => {
-    const n = (t.function?.name || t.name || '').toLowerCase();
-    return ['create_directory', 'make_directory', 'mkdir', 'create_folder'].includes(n);
-  });
+  // 4. Universal Smart Fallback: If model wrote shell command (mkdir, touch, etc.) or bash block
+  if (validTools.length > 0) {
+    const dirTool = findMatchingTool(validTools, ['directory', 'folder', 'mkdir', 'dir']);
+    const execTool = findMatchingTool(validTools, ['command', 'terminal', 'bash', 'shell', 'exec', 'run']);
 
-  const bashBlockRegex = /```(?:bash|sh|shell|cmd|powershell)\s*([\s\S]*?)```/i;
-  const bashMatch = text.match(bashBlockRegex);
-  if (bashMatch) {
-    const cmd = bashMatch[1].trim();
-    if (cmd && !cmd.includes('\n')) {
-      // Check if mkdir
-      const mkdirMatch = /^mkdir\s+(?:-p\s+)?["']?([^"'\n]+)["']?$/i.exec(cmd);
-      if (mkdirMatch && dirTool) {
+    // Check code blocks or inline commands
+    const bashBlockRegex = /```(?:bash|sh|shell|cmd|powershell)?\s*([\s\S]*?)```/i;
+    const bashMatch = text.match(bashBlockRegex);
+    const candidateCode = bashMatch ? bashMatch[1].trim() : text;
+
+    // Pattern A: mkdir command
+    const mkdirMatch = /(?:^|\n|\s)mkdir\s+(?:-p\s+)?["']?([^\s"'\n]+)["']?/i.exec(candidateCode);
+    if (mkdirMatch) {
+      const folderName = mkdirMatch[1].trim();
+      if (dirTool) {
         const toolName = dirTool.function?.name || dirTool.name;
         const paramKey = Object.keys(dirTool.function?.parameters?.properties || {})[0] || 'path';
         return {
@@ -150,13 +163,32 @@ export function parseToolCallsFromText(text, tools = []) {
             type: 'function',
             function: {
               name: toolName,
-              arguments: JSON.stringify({ [paramKey]: mkdirMatch[1].trim() }),
+              arguments: JSON.stringify({ [paramKey]: folderName }),
             },
           }],
         };
       }
-
       if (execTool) {
+        const toolName = execTool.function?.name || execTool.name;
+        const paramKey = Object.keys(execTool.function?.parameters?.properties || {})[0] || 'command';
+        return {
+          text: text.replace(bashBlockRegex, '').trim(),
+          toolCalls: [{
+            id: `call_${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`,
+            type: 'function',
+            function: {
+              name: toolName,
+              arguments: JSON.stringify({ [paramKey]: `mkdir ${folderName}` }),
+            },
+          }],
+        };
+      }
+    }
+
+    // Pattern B: Any other single shell command in code block
+    if (bashMatch && execTool) {
+      const cmd = bashMatch[1].trim();
+      if (cmd && !cmd.includes('\n') && cmd.length < 200) {
         const toolName = execTool.function?.name || execTool.name;
         const paramKey = Object.keys(execTool.function?.parameters?.properties || {})[0] || 'command';
         return {
