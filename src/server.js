@@ -3,7 +3,7 @@ import http from 'node:http';
 import { AppError, normalizeError, openAIErrorBody } from './errors.js';
 import { Semaphore } from './semaphore.js';
 import { translateChatRequest } from './translator.js';
-import { parseToolCallsFromText } from './tool-engine.js';
+import { defaultToolEngine } from './tool-engine/index.js';
 
 function writeJson(response, status, body) {
   if (response.writableEnded) return;
@@ -207,7 +207,7 @@ export function createAdapterServer({ config, client, catalog, logger }) {
               total_tokens: estPromptTokens + estCompletionTokens,
             };
 
-            const { text: contentText, toolCalls } = parseToolCallsFromText(fullText, translated.tools);
+            const { text: contentText, toolCalls } = defaultToolEngine.parseOutbound(fullText, translated.tools);
             const hasToolCalls = Boolean(toolCalls && toolCalls.length > 0);
 
             logger?.info('chat_completion_result', {

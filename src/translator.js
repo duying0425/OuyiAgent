@@ -1,7 +1,7 @@
 import { AppError } from './errors.js';
-import { buildToolsSystemPrompt } from './tool-engine.js';
+import { defaultToolEngine } from './tool-engine/index.js';
 
-export function extractSystemAndPrompt(messages, tools = []) {
+export function extractSystemAndPrompt(messages, tools = [], toolChoice = 'auto') {
   if (!Array.isArray(messages) || messages.length === 0) {
     throw new AppError('messages must be a non-empty array', {
       status: 400,
@@ -26,7 +26,6 @@ export function extractSystemAndPrompt(messages, tools = []) {
         .join('\n');
     }
 
-    // Handle assistant tool_calls in history
     if (!content && Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
       content = msg.tool_calls
         .map((tc) => `[Tool Call: ${tc.function?.name ?? 'unknown'}(${tc.function?.arguments ?? ''})]`)
@@ -47,8 +46,9 @@ export function extractSystemAndPrompt(messages, tools = []) {
     }
   }
 
-  if (Array.isArray(tools) && tools.length > 0) {
-    systemParts.push(buildToolsSystemPrompt(tools));
+  const inbound = defaultToolEngine.formatInbound({ tools, toolChoice });
+  if (inbound.hasTools && inbound.toolPrompt) {
+    systemParts.push(inbound.toolPrompt);
   }
 
   const systemMessage = systemParts.join('\n\n');
@@ -74,10 +74,11 @@ export function extractSystemAndPrompt(messages, tools = []) {
       .join('\n\n');
   }
 
-  if (Array.isArray(tools) && tools.length > 0 && systemMessage) {
+  if (inbound.hasTools && systemMessage) {
     prompt = `${systemMessage}\n\n${prompt}`;
   }
-  return { systemMessage, prompt, conversation };
+
+  return { systemMessage, prompt, conversation, inbound };
 }
 
 export async function translateChatRequest(body, catalog, { signal } = {}) {
@@ -90,7 +91,7 @@ export async function translateChatRequest(body, catalog, { signal } = {}) {
   }
 
   const tools = Array.isArray(body.tools) ? body.tools : [];
-  const { systemMessage, prompt, conversation } = extractSystemAndPrompt(body.messages, tools);
+  const { systemMessage, prompt, conversation, inbound } = extractSystemAndPrompt(body.messages, tools, body.tool_choice);
   const rawModel = typeof body.model === 'string' ? body.model.trim() : '';
   const model = await catalog.validateModel(rawModel, { signal });
 
@@ -106,6 +107,7 @@ export async function translateChatRequest(body, catalog, { signal } = {}) {
     stream,
     maxTokens,
     temperature,
-    tools,
+    tools: inbound.tools,
+    toolChoice: inbound.toolChoice,
   };
 }
