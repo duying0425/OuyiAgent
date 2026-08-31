@@ -15,7 +15,7 @@ export function renderDefaultTemplate({ tools = [], toolChoice = 'auto' } = {}) 
     return '- ' + name + ':' + desc + params;
   }).join('\n');
 
-  let choiceInstruction = '1. If the user request can be answered directly without executing tools, reply in natural language.\n2. If you need to perform an action (create files, run commands, list directories, search code, etc.), you MUST invoke the appropriate tool.';
+  let choiceInstruction = '1. If the user request is purely conversational (e.g. asking for explanations, theory, definitions), reply in natural language.\n2. If the user asks you to perform an action (e.g. create a file, write a program, execute a command, modify code, search directory), you MUST call the appropriate workspace tool directly.';
 
   if (toolChoice === 'required') {
     choiceInstruction = '1. You MUST invoke at least one tool to fulfill this request.';
@@ -44,8 +44,9 @@ export function renderDefaultTemplate({ tools = [], toolChoice = 'auto' } = {}) 
     '',
     'CRITICAL RULES:',
     choiceInstruction,
-    '2. You may include a brief explanatory thought before the ```tool_call block.',
-    '3. The IDE will execute your tool and return the output in the subsequent turn.',
+    '3. BE PROACTIVE: When asked to write a program, script, or implement a feature, do not just chat or ask clarifying questions in text. Directly write the complete working code and call the file creation/writing tool (e.g. write_to_file / create_file) to produce the file.',
+    '4. You may include a brief explanatory thought before the ```tool_call block.',
+    '5. The IDE will execute your tool and return the output in the subsequent turn.',
     ''
   ].join('\n');
 }
